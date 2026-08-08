@@ -80,6 +80,10 @@ comparable across families with very different scales. It then writes:
   coincide for a given model rather than assuming it from the heatmap alone.
   The same top-1% channels are highlighted in gap-orange here as in the
   heatmap's marker strip.
+- `chain_scatter.csv` — the same per-channel data behind `chain_scatter.png`
+  (one row per channel: `channel`, `rank`, `outlier_hits`, `gamma`,
+  `is_chain_channel`), for re-plotting or filtering outside the fixed PNG.
+  Written alongside it, whenever the model has `output_norm.weight`.
 
 Channel magnitudes are computed from the full-resolution dequantized tensor,
 before `--max-dim` downsampling, so `--chain-report` keeps single-channel

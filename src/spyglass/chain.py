@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import math
 import re
@@ -188,6 +189,16 @@ def _nice_ticks(vmin: float, vmax: float, target_count: int = 5) -> list[float]:
     return ticks or [vmin]
 
 
+def _rank_channels(report: ChainReport) -> np.ndarray:
+    """Each channel's 1-indexed rank by outlier-hit count (1 = most
+    persistent), shared by the scatter PNG and its CSV export so both agree.
+    """
+    order = np.argsort(-report.outlier_hits, kind="stable")
+    rank_of_channel = np.empty(report.hidden_size, dtype=np.int64)
+    rank_of_channel[order] = np.arange(1, report.hidden_size + 1)
+    return rank_of_channel
+
+
 def render_chain_scatter(report: ChainReport, gamma: np.ndarray, path: Path) -> None:
     """Scatter of each channel's outlier-hit rank (x, 1 = the most persistent
     chain channel) against its final-norm gamma (y, how much that channel's
@@ -203,10 +214,7 @@ def render_chain_scatter(report: ChainReport, gamma: np.ndarray, path: Path) -> 
     if gamma.shape != (hidden_size,):
         raise ValueError(f"gamma shape {gamma.shape} != (hidden_size,)=({hidden_size},)")
 
-    order = np.argsort(-report.outlier_hits, kind="stable")
-    rank_of_channel = np.empty(hidden_size, dtype=np.int64)
-    rank_of_channel[order] = np.arange(1, hidden_size + 1)
-
+    rank_of_channel = _rank_channels(report)
     top_channels = top_outlier_channels(report)
 
     m = SCATTER_MARGIN
@@ -273,6 +281,32 @@ def render_chain_scatter(report: ChainReport, gamma: np.ndarray, path: Path) -> 
 
     path.parent.mkdir(parents=True, exist_ok=True)
     img.save(path)
+
+
+def write_chain_scatter_csv(report: ChainReport, gamma: np.ndarray, path: Path) -> None:
+    """Same per-channel data as render_chain_scatter (rank, gamma, chain-channel
+    flag), one row per channel including its id, for anyone who wants to
+    re-plot or filter it outside the fixed PNG.
+    """
+    hidden_size = report.hidden_size
+    if gamma.shape != (hidden_size,):
+        raise ValueError(f"gamma shape {gamma.shape} != (hidden_size,)=({hidden_size},)")
+
+    rank_of_channel = _rank_channels(report)
+    top_channels = top_outlier_channels(report)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["channel", "rank", "outlier_hits", "gamma", "is_chain_channel"])
+        for c in range(hidden_size):
+            writer.writerow([
+                c,
+                int(rank_of_channel[c]),
+                int(report.outlier_hits[c]),
+                float(gamma[c]),
+                c in top_channels,
+            ])
 
 
 def write_chain_report_json(report: ChainReport, path: Path) -> None:

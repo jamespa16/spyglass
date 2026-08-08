@@ -37,6 +37,7 @@ class RunReport:
     chain_report_path: Optional[str] = None
     chain_heatmap_path: Optional[str] = None
     chain_scatter_path: Optional[str] = None
+    chain_scatter_csv_path: Optional[str] = None
 
     def counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -55,6 +56,7 @@ def write_manifest(report: RunReport, path: Path) -> None:
         "chain_report_path": report.chain_report_path,
         "chain_heatmap_path": report.chain_heatmap_path,
         "chain_scatter_path": report.chain_scatter_path,
+        "chain_scatter_csv_path": report.chain_scatter_csv_path,
     }
     path.write_text(json.dumps(payload, indent=2))
 
@@ -71,3 +73,5 @@ def print_summary(report: RunReport, *, print_fn=print) -> None:
         print_fn(f"chain heatmap: {report.chain_heatmap_path}")
     if report.chain_scatter_path:
         print_fn(f"chain scatter: {report.chain_scatter_path}")
+    if report.chain_scatter_csv_path:
+        print_fn(f"chain scatter csv: {report.chain_scatter_csv_path}")

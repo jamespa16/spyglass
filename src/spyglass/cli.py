@@ -19,6 +19,7 @@ from spyglass.chain import (
     render_chain_heatmap,
     render_chain_scatter,
     write_chain_report_json,
+    write_chain_scatter_csv,
 )
 from spyglass.dequant import DequantError, dequantize_tensor
 from spyglass.imaging import compose_tile_grid, write_grayscale_png, write_rgb_png
@@ -310,6 +311,7 @@ def run(args: argparse.Namespace) -> RunReport:
     chain_report_path: Optional[str] = None
     chain_heatmap_path: Optional[str] = None
     chain_scatter_path: Optional[str] = None
+    chain_scatter_csv_path: Optional[str] = None
     if chain_hidden_size is not None:
         chain_report = build_chain_report(chain_samples, chain_hidden_size)
         if chain_report is None:
@@ -348,9 +350,13 @@ def run(args: argparse.Namespace) -> RunReport:
                     )
                 elif gamma is not None:
                     scatter_path = output_dir / "chain_scatter.png"
+                    scatter_csv_path = output_dir / "chain_scatter.csv"
                     render_chain_scatter(chain_report, gamma, scatter_path)
+                    write_chain_scatter_csv(chain_report, gamma, scatter_csv_path)
                     chain_scatter_path = str(scatter_path)
+                    chain_scatter_csv_path = str(scatter_csv_path)
                     logger.warning("chain scatter: %s", scatter_path)
+                    logger.warning("chain scatter csv: %s", scatter_csv_path)
 
     report = RunReport(
         input_path=str(args.gguf_path),
@@ -360,6 +366,7 @@ def run(args: argparse.Namespace) -> RunReport:
         outcomes=outcomes,
         chain_report_path=chain_report_path,
         chain_scatter_path=chain_scatter_path,
+        chain_scatter_csv_path=chain_scatter_csv_path,
         chain_heatmap_path=chain_heatmap_path,
     )
 

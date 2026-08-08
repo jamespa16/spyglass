@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from spyglass.chain import (
     infer_hidden_size,
     render_chain_scatter,
     top_outlier_channels,
+    write_chain_scatter_csv,
 )
 from spyglass.cli import build_arg_parser, run
 from spyglass.reading import TensorInfo
@@ -137,6 +139,47 @@ def test_render_chain_scatter_rejects_mismatched_gamma_shape(tmp_path):
         render_chain_scatter(report, np.ones(5, dtype=np.float32), tmp_path / "out.png")
 
 
+def test_write_chain_scatter_csv_has_one_row_per_channel_with_channel_id(tmp_path):
+    hidden_size = 40
+    samples = [
+        ChainSample(layer=layer, family="attn_q", magnitude=np.full(hidden_size, 1.0))
+        for layer in range(3)
+    ]
+    for sample in samples:
+        sample.magnitude[3] = 500.0
+    report = build_chain_report(samples, hidden_size=hidden_size)
+    assert report is not None
+
+    gamma = np.arange(hidden_size, dtype=np.float32)
+    out_path = tmp_path / "chain_scatter.csv"
+
+    write_chain_scatter_csv(report, gamma, out_path)
+
+    assert out_path.exists()
+    with out_path.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    assert len(rows) == hidden_size
+    assert {row["channel"] for row in rows} == {str(c) for c in range(hidden_size)}
+
+    row3 = next(row for row in rows if row["channel"] == "3")
+    assert row3["rank"] == "1"
+    assert row3["is_chain_channel"] == "True"
+    assert float(row3["gamma"]) == 3.0
+
+    other = next(row for row in rows if row["channel"] == "0")
+    assert other["is_chain_channel"] == "False"
+
+
+def test_write_chain_scatter_csv_rejects_mismatched_gamma_shape(tmp_path):
+    samples = [ChainSample(layer=0, family="attn_q", magnitude=np.full(10, 1.0))]
+    report = build_chain_report(samples, hidden_size=10)
+    assert report is not None
+
+    with pytest.raises(ValueError):
+        write_chain_scatter_csv(report, np.ones(5, dtype=np.float32), tmp_path / "out.csv")
+
+
 def _run(gguf_path: Path, out_dir: Path, extra_args: list[str] | None = None):
     parser = build_arg_parser()
     args = parser.parse_args([str(gguf_path), "-o", str(out_dir), *(extra_args or [])])
@@ -152,6 +195,7 @@ def test_cli_chain_report_end_to_end(chain_gguf_fixture, tmp_path):
     assert report.chain_report_path is not None
     assert report.chain_heatmap_path is not None
     assert report.chain_scatter_path is not None
+    assert report.chain_scatter_csv_path is not None
 
     heatmap_path = Path(report.chain_heatmap_path)
     assert heatmap_path.exists()
@@ -162,6 +206,15 @@ def test_cli_chain_report_end_to_end(chain_gguf_fixture, tmp_path):
     assert scatter_path.exists()
     scatter_img = Image.open(scatter_path)
     assert scatter_img.mode == "RGB"
+
+    scatter_csv_path = Path(report.chain_scatter_csv_path)
+    assert scatter_csv_path.exists()
+    with scatter_csv_path.open(newline="") as f:
+        csv_rows = list(csv.DictReader(f))
+    assert csv_rows, "expected a row per channel"
+    assert csv_rows[0].keys() == {"channel", "rank", "outlier_hits", "gamma", "is_chain_channel"}
+    assert len(csv_rows) == info["hidden_size"]
+    assert {row["channel"] for row in csv_rows} == {str(c) for c in range(info["hidden_size"])}
 
     payload = json.loads(Path(report.chain_report_path).read_text())
     assert payload["hidden_size"] == info["hidden_size"]
@@ -174,6 +227,7 @@ def test_cli_chain_report_end_to_end(chain_gguf_fixture, tmp_path):
     assert manifest["chain_report_path"] == report.chain_report_path
     assert manifest["chain_heatmap_path"] == report.chain_heatmap_path
     assert manifest["chain_scatter_path"] == report.chain_scatter_path
+    assert manifest["chain_scatter_csv_path"] == report.chain_scatter_csv_path
 
 
 def test_cli_without_chain_report_flag_writes_nothing_extra(chain_gguf_fixture, tmp_path):
@@ -185,9 +239,11 @@ def test_cli_without_chain_report_flag_writes_nothing_extra(chain_gguf_fixture, 
     assert report.chain_report_path is None
     assert report.chain_heatmap_path is None
     assert report.chain_scatter_path is None
+    assert report.chain_scatter_csv_path is None
     assert not (out_dir / "chain_report.json").exists()
     assert not (out_dir / "chain_heatmap.png").exists()
     assert not (out_dir / "chain_scatter.png").exists()
+    assert not (out_dir / "chain_scatter.csv").exists()
 
 
 def test_cli_chain_report_on_gguf_without_block_tensors_is_a_noop(gguf_fixture, tmp_path):
