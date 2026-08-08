@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>spyglass viewer</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div id="title">spyglass</div>
+    <nav id="modes">
+      <button class="mode-btn" data-mode="layers">Layers</button>
+      <button class="mode-btn" data-mode="stack">Stack by family</button>
+      <button class="mode-btn" data-mode="blocks">Stack by block</button>
+      <button class="mode-btn" data-mode="global">Global</button>
+      <button class="mode-btn" data-mode="chain">Chain report</button>
+    </nav>
+    <div id="model-name"></div>
+  </header>
+
+  <div id="body">
+
+    <aside id="sidebar">
+      <div id="family-list" class="panel-list"></div>
+      <div id="block-list" class="panel-list hidden"></div>
+      <div id="global-list" class="panel-list hidden"></div>
+      <div id="chain-list" class="panel-list hidden"></div>
+    </aside>
+
+    <main id="viewport-wrap">
+      <div id="viewport">
+        <img id="viewer-image" alt="" draggable="false" />
+        <div id="stack-list" class="hidden"></div>
+        <div id="corner-tl" class="corner"></div>
+        <div id="corner-tr" class="corner"></div>
+        <div id="corner-bl" class="corner"></div>
+        <div id="corner-br" class="corner"></div>
+        <div id="empty-state">No image loaded — pick a family, layer, or the chain report.</div>
+      </div>
+
+      <div id="slice-controls">
+        <button id="layer-prev" title="Previous layer (↑ / ←)">◀</button>
+        <input id="layer-slider" type="range" min="0" max="0" value="0" step="1" />
+        <button id="layer-next" title="Next layer (↓ / →)">▶</button>
+        <span id="layer-readout">layer 0 / 0</span>
+      </div>
+    </main>
+
+    <aside id="inspector">
+      <section>
+        <h3>Window / Level</h3>
+        <label>Brightness <input id="brightness" type="range" min="50" max="200" value="100" /></label>
+        <label>Contrast <input id="contrast" type="range" min="50" max="300" value="100" /></label>
+        <label>Width <input id="width-scale" type="range" min="10" max="100" value="100" /></label>
+        <button id="toggle-rotate" class="toggle-btn active" title="In the stack views, transpose tensors whose residual-stream axis would otherwise render vertically">Channel-axis alignment: On</button>
+        <button id="reset-wl">Reset</button>
+      </section>
+      <section>
+        <h3>Tensor</h3>
+        <dl id="stats-list"></dl>
+      </section>
+    </aside>
+
+  </div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -7,6 +7,13 @@ import numpy as np
 from spyglass.dequant import DequantError, dequantize_tensor
 from spyglass.reading import TensorInfo
 
+# Diverging colormap endpoints: negative weights fade in toward NEGATIVE_COLOR,
+# positive weights toward POSITIVE_COLOR, and zero is black for both -- so
+# magnitude reads as brightness and sign reads as hue, distinct from each other
+# instead of sharing one grayscale axis.
+NEGATIVE_COLOR = (168, 85, 247)  # purple
+POSITIVE_COLOR = (250, 204, 21)  # yellow
+
 
 def estimate_clip(
     candidates: Sequence[TensorInfo],
@@ -54,12 +61,22 @@ def estimate_clip(
     return clip_std * std
 
 
-def to_uint8(arr_f32: np.ndarray, clip: float) -> np.ndarray:
+def to_diverging_rgb(arr_f32: np.ndarray, clip: float) -> np.ndarray:
+    """Maps signed weights to an RGB heatmap against a fixed clip range,
+    shared across every image in a run so brightness and hue are both
+    comparable across layers: black at zero, saturating toward
+    NEGATIVE_COLOR as values go more negative and POSITIVE_COLOR as they
+    go more positive.
+    """
     if not np.isfinite(clip) or clip <= 0:
-        return np.full(arr_f32.shape, 128, dtype=np.uint8)
-    clipped = np.clip(arr_f32, -clip, clip)
-    pixel = np.rint((clipped + clip) / (2.0 * clip) * 255.0)
-    return pixel.astype(np.uint8)
+        return np.zeros(arr_f32.shape + (3,), dtype=np.uint8)
+
+    t = np.clip(arr_f32, -clip, clip) / clip  # in [-1, 1]
+    magnitude = np.abs(t)[..., np.newaxis]
+    negative = np.array(NEGATIVE_COLOR, dtype=np.float64)
+    positive = np.array(POSITIVE_COLOR, dtype=np.float64)
+    color = np.where(t[..., np.newaxis] < 0, negative, positive)
+    return np.rint(magnitude * color).astype(np.uint8)
 
 
 def downsample_block_mean(arr_f32: np.ndarray, max_dim: int) -> np.ndarray:

@@ -22,9 +22,9 @@ from spyglass.chain import (
     write_chain_scatter_csv,
 )
 from spyglass.dequant import DequantError, dequantize_tensor
-from spyglass.imaging import compose_tile_grid, write_grayscale_png, write_rgb_png
+from spyglass.imaging import compose_tile_grid, write_rgb_png
 from spyglass.naming import safe_filename
-from spyglass.normalize import downsample_block_mean, estimate_clip, to_uint8
+from spyglass.normalize import downsample_block_mean, estimate_clip, to_diverging_rgb
 from spyglass.reading import TensorInfo, iter_tensor_infos, open_reader
 from spyglass.report import RunReport, TensorOutcome, print_summary, write_manifest
 from spyglass.scheduling import default_memory_budget_bytes, run_memory_aware
@@ -36,8 +36,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="spyglass",
         description=(
-            "Render every 2D weight tensor in a GGUF file as a grayscale PNG heatmap "
-            "(3D tensors, e.g. stacked MoE experts, render as a grid of per-slice tiles)."
+            "Render every 2D weight tensor in a GGUF file as a purple/black/yellow "
+            "diverging-colormap PNG heatmap (3D tensors, e.g. stacked MoE experts, "
+            "render as a grid of per-slice tiles)."
         ),
         epilog=(
             "Memory note: by default tensors are dequantized and written one at a "
@@ -139,7 +140,7 @@ def _process_tensor(
 ) -> TensorOutcome:
     """Dequantizes, normalizes, and writes a single tensor's PNG.
 
-    2D tensors render as a single grayscale heatmap. 3D tensors (e.g. a
+    2D tensors render as a single diverging-colormap heatmap. 3D tensors (e.g. a
     stacked MoE expert weight, shape (n_expert, rows, cols)) render as a
     grid of one heatmap tile per slice along axis 0, separated by a solid
     color gap so experts stay visually distinct instead of blurring
@@ -180,15 +181,15 @@ def _process_tensor(
             "mean": float(np.mean(arr_f32)),
             "std": float(np.std(arr_f32)),
         }
-        img_u8 = to_uint8(arr_f32, clip)
+        img_rgb = to_diverging_rgb(arr_f32, clip)
 
-        if img_u8.ndim == 3:
-            n_tiles, tile_rows, tile_cols = img_u8.shape
-            tiled = compose_tile_grid(img_u8)
+        if img_rgb.ndim == 4:
+            n_tiles, tile_rows, tile_cols, _ = img_rgb.shape
+            tiled = compose_tile_grid(img_rgb)
             write_rgb_png(tiled, out_path)
             stats["tiles"] = {"count": n_tiles, "tile_shape": [tile_rows, tile_cols]}
         else:
-            write_grayscale_png(img_u8, out_path)
+            write_rgb_png(img_rgb, out_path)
 
         logger.info("wrote %s <- %s (%s)", out_path, info.name, info.ggml_type.name)
         return TensorOutcome(

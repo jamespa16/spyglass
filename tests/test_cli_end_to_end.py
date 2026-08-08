@@ -33,7 +33,7 @@ def test_end_to_end_writes_expected_pngs_and_skips_unsupported_ndim(gguf_fixture
         assert png_path.name == f"{name}.png"
 
         img = Image.open(png_path)
-        assert img.mode == "L"
+        assert img.mode == "RGB"
         # PIL size is (width, height) == (cols, rows); numpy shape is (rows, cols)
         expected_rows, expected_cols = arrays[name].shape
         assert img.size == (expected_cols, expected_rows)

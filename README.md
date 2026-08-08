@@ -1,10 +1,14 @@
 # spyglass
 
-Renders every 2D weight tensor in a GGUF file as a grayscale PNG heatmap.
-Pixel `(x, y)` brightness encodes the weight connecting neuron `x` to neuron `y`:
-black is the most negative weight, mid-gray is zero, white is the most positive
-weight, all scaled against one fixed range shared across every image in a run
-so brightness is comparable across layers.
+Renders every 2D weight tensor in a GGUF file as a PNG heatmap. Pixel `(x, y)`
+encodes the weight connecting neuron `x` to neuron `y` on a diverging
+purple/black/yellow scale: black is zero, purple deepens as a weight goes
+more negative, yellow deepens as it goes more positive, all scaled against
+one fixed range shared across every image in a run so brightness and hue are
+both comparable across layers. Zero (the vast majority of any weight matrix)
+recedes into the same black as the rest of the tool's UI, so what's left
+visible is what actually stands out -- an outlier channel or coordinate pops
+by hue and brightness together instead of blending into a gray background.
 
 ## Install
 
@@ -26,6 +30,64 @@ spyglass model.gguf --chain-report        # also trace outlier channels across e
 
 Run `spyglass --help` for the full flag list.
 
+## Viewer
+
+```sh
+spyglass-view model_weights/          # opens a browser tab, serves on :8765
+spyglass-view model_weights/ --port 9000 --no-browser
+```
+
+Serves a local, MRI-style viewer for a results folder: pick a tensor family
+(`attn_q`, `ffn_down`, ...) in the sidebar and scrub through layers with the
+slider, arrow keys, or mouse wheel over the image, the way a radiology viewer
+scrubs through slices. Two more tabs concatenate multiple heatmaps into one continuous, scrollable
+strip instead of showing one at a time:
+
+- **"Stack by family"** — every layer's heatmap for the *selected* family,
+  in depth order (`blk.0` at the top down to the last layer), so a channel
+  that stays bright in the same column all the way down — a "chain" — is
+  visible by eye. Layers where that family doesn't exist (e.g. a Gated
+  DeltaNet layer with no `attn_q`, in a hybrid attention/SSM model) show as
+  a labeled gap instead of being silently skipped.
+- **"Stack by block"** — *every* family for one block, then the next block's
+  tensors right after it, and so on through the whole network — i.e. the
+  model's actual tensors back-to-back in depth order, not filtered down to
+  one family. Each block gets a sticky header as you scroll, and the
+  sidebar is a block-number jump list.
+
+Both stack views also line every tensor's residual-stream axis up as the
+horizontal one. A tensor's "other" axis (head width, FFN intermediate size,
+...) differs per family, but whichever axis matches the model's `hidden_size`
+is the same coordinate space everywhere — the same one `--chain-report`
+analyzes — so the viewer detects it (same recurring-axis logic as
+`chain.infer_hidden_size`, just from `manifest.json` shapes) and transposes
+any tensor whose hidden axis would otherwise render vertically. A row whose
+label ends in `⟲` has been transposed this way; hover it for a tooltip.
+Without this, e.g. Gemma's `proj.weight` (`2560×256`, hidden axis on rows)
+would render as a narrow 10:1 tall strip next to `attn_k.weight`'s wide 5:1
+strip even though both share the same 2560-wide channel axis — after
+transposing, both read left-to-right in the same channel space, so a
+persistent "chain" channel lines up in the same column across every family
+and every block. A "Channel-axis alignment" button in the Window/Level panel
+toggles this on/off, to compare against each tensor's native orientation.
+
+Tensors with no axis tied to the residual stream at all -- an SSM `conv1d`
+kernel, a low-rank projection like `ssm_alpha`/`ssm_beta` -- have nothing to
+line up against other tensors, but a long, thin shape left in its native
+orientation (e.g. Qwen's `ssm_conv1d.weight`, `(10240, 4)`) would otherwise
+stretch to an absurd height once a row is scaled to full width. For these,
+the viewer falls back to orienting the long axis horizontally instead, the
+same way `ssm_alpha`/`ssm_beta` already happen to sit -- so every row in the
+stack reads "wide, short" the same way regardless of what the tensor means.
+
+A "Global" tab lists non-per-layer tensors (e.g.
+`token_embd.weight`), and a "Chain report" tab shows `chain_heatmap.png` /
+`chain_scatter.png` plus the ranked outlier-channel table when the folder was
+rendered with `--chain-report`. Per-tensor stats (dtype, shape, min/max/mean/std)
+come from `manifest.json` when present; without it, the viewer falls back to
+scanning the folder's filenames so it still works pointed at a folder from an
+older run. It's read-only and has no extra dependencies beyond the stdlib.
+
 ### Notes
 
 - By default (`--jobs 1`) tensors are dequantized and processed one at a time, so
@@ -36,12 +98,12 @@ Run `spyglass --help` for the full flag list.
   capped. Tensors are admitted largest-fits-first against the remaining budget, so
   smaller tensors opportunistically fill in while a big one waits for room instead
   of stalling behind it. Output is identical to a sequential run either way.
-- 2D tensors render as a single grayscale heatmap. 3D tensors (e.g. a stacked
-  MoE expert weight, shape `(n_expert, rows, cols)`) render as an RGB PNG: one
-  grayscale heatmap tile per slice along axis 0, arranged in a roughly square
-  grid and separated by a solid orange gap so each expert's matrix stays
-  visually distinct instead of blurring into its neighbors. Tile count and
-  per-tile shape are recorded in `manifest.json` under that tensor's `stats.tiles`.
+- 2D tensors render as a single diverging-colormap heatmap. 3D tensors (e.g. a
+  stacked MoE expert weight, shape `(n_expert, rows, cols)`) render the same
+  way per slice along axis 0, arranged in a roughly square grid and separated
+  by a solid orange gap so each expert's matrix stays visually distinct
+  instead of blurring into its neighbors. Tile count and per-tile shape are
+  recorded in `manifest.json` under that tensor's `stats.tiles`.
 - 1D tensors (layer norms, biases) and tensors with 4+ dimensions are skipped
   and noted in `manifest.json` as `skipped_unsupported_ndim`.
 - A pixel's coordinates are `array[y, x]` (or `array[tile, y, x]` for a 3D/tiled

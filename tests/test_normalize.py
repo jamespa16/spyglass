@@ -1,28 +1,46 @@
 import numpy as np
 
-from spyglass.normalize import downsample_block_mean, to_uint8
+from spyglass.normalize import (
+    NEGATIVE_COLOR,
+    POSITIVE_COLOR,
+    downsample_block_mean,
+    to_diverging_rgb,
+)
 
 
-def test_to_uint8_known_values():
+def test_to_diverging_rgb_known_values():
     clip = 0.5
     arr = np.array([-clip, 0.0, clip], dtype=np.float32)
-    result = to_uint8(arr, clip)
-    assert result.tolist() == [0, 128, 255]
+    result = to_diverging_rgb(arr, clip)
+    assert result.shape == (3, 3)
+    assert result[0].tolist() == list(NEGATIVE_COLOR)
+    assert result[1].tolist() == [0, 0, 0]
+    assert result[2].tolist() == list(POSITIVE_COLOR)
 
 
-def test_to_uint8_clips_outliers():
+def test_to_diverging_rgb_scales_toward_black_with_magnitude():
+    clip = 1.0
+    arr = np.array([-0.5, 0.5], dtype=np.float32)
+    result = to_diverging_rgb(arr, clip)
+    assert result[0].tolist() == [round(c * 0.5) for c in NEGATIVE_COLOR]
+    assert result[1].tolist() == [round(c * 0.5) for c in POSITIVE_COLOR]
+
+
+def test_to_diverging_rgb_clips_outliers():
     clip = 1.0
     arr = np.array([-10.0, 10.0], dtype=np.float32)
-    result = to_uint8(arr, clip)
-    assert result.tolist() == [0, 255]
+    result = to_diverging_rgb(arr, clip)
+    assert result[0].tolist() == list(NEGATIVE_COLOR)
+    assert result[1].tolist() == list(POSITIVE_COLOR)
 
 
-def test_to_uint8_degenerate_clip_returns_flat_gray():
+def test_to_diverging_rgb_degenerate_clip_returns_flat_black():
     arr = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
-    result = to_uint8(arr, 0.0)
-    assert np.all(result == 128)
-    result = to_uint8(arr, float("nan"))
-    assert np.all(result == 128)
+    result = to_diverging_rgb(arr, 0.0)
+    assert result.shape == (2, 2, 3)
+    assert np.all(result == 0)
+    result = to_diverging_rgb(arr, float("nan"))
+    assert np.all(result == 0)
 
 
 def test_downsample_block_mean_no_op_when_small_enough():
