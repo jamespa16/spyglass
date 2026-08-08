@@ -21,6 +21,7 @@ spyglass model.gguf --clip-value 0.25     # fixed, reproducible brightness scale
 spyglass model.gguf --exclude 'token_embd\.weight|output\.weight'  # skip huge tensors
 spyglass model.gguf --max-dim 2048        # block-average downsample large matrices
 spyglass model.gguf --jobs 4              # dequantize/render up to 4 tensors at once
+spyglass model.gguf --chain-report        # also trace outlier channels across every layer
 ```
 
 Run `spyglass --help` for the full flag list.
@@ -48,3 +49,96 @@ Run `spyglass --help` for the full flag list.
   tile axis and `x` is the second — check `manifest.json` or `--dry-run` output
   for each tensor's shape if you need to map a pixel back to a specific
   `(source_neuron, dest_neuron)` pair for a given architecture.
+
+### Chain report (`--chain-report`)
+
+Every per-layer weight matrix has exactly one axis tied to the model's
+residual-stream width (its input or output projection dimension) — the model's
+width is auto-detected as the one dimension size shared across nearly every
+`blk.N.*.weight` tensor, no architecture-specific config needed. `--chain-report`
+computes each channel's mean `|weight|` along that axis, per layer and per
+tensor family, and z-scores it against its own tensor so magnitude is
+comparable across families with very different scales. It then writes:
+
+- `chain_heatmap.png` — layer (row) × channel (column) grid, brightness = mean
+  `|z-score|` for that channel in that layer, averaged over every tensor
+  family present at that layer. A channel that stays bright top-to-bottom is
+  an outlier in nearly every layer: a "chain" running the model's full depth
+  (the "massive activation" / rogue-dimension phenomenon reported in LLM
+  interpretability work). The bottom strip marks the busiest 1% of channels
+  in the tool's gap-orange.
+- `chain_report.json` — the channels ranked by how often (across every
+  `(layer, family)` pair) their z-score exceeds 3, with a hit rate so runs on
+  different models are comparable.
+- `chain_scatter.png` — one point per channel: x is its rank in the report
+  above (1 = the most persistent chain channel), y is the model's
+  final-norm (`output_norm.weight`) gamma for that channel, i.e. how much of
+  it actually survives to the output logits after the last RMSNorm. Written
+  only when the model has that tensor. A channel dominating every
+  mid-network matrix doesn't imply it dominates the readout too — those are
+  different things, and this is the chart that shows whether they happen to
+  coincide for a given model rather than assuming it from the heatmap alone.
+  The same top-1% channels are highlighted in gap-orange here as in the
+  heatmap's marker strip.
+
+Channel magnitudes are computed from the full-resolution dequantized tensor,
+before `--max-dim` downsampling, so `--chain-report` keeps single-channel
+precision even on a run that downsamples its PNGs. It only covers tensors
+actually written during the run, so on a directory that was already rendered,
+pair it with `--overwrite` for a complete picture.
+
+#### Why this might be interesting
+
+A channel that's an outlier in nearly every layer means the same residual-stream
+coordinate carries unusually large weight all the way through the network,
+instead of each layer routing information through its own independent set of
+dimensions. That's not noise — it lines up with a few things reported in LLM
+interpretability and quantization work:
+
+- **Massive activations.** [Sun et al., 2024](https://arxiv.org/abs/2402.17762)
+  found that a handful of hidden-state dimensions in trained LLMs carry
+  activation magnitudes ~1000x the median, persist across most of the model's
+  depth, and — when zeroed out — collapse the model's output. Weight-magnitude
+  outliers are a plausible downstream cause: a channel that every layer's
+  input/output projections weight heavily is exactly the kind of dimension
+  that would blow up in activation space too.
+- **Super weights.** [Yu et al., 2024](https://arxiv.org/abs/2411.07191) went a
+  step further and showed the effect can trace back to a tiny number of
+  *individual weight coordinates* — pruning a single one is enough to destroy
+  the model's ability to generate coherent text, far out of proportion to its
+  size. A "chain" is the weight-level shadow of that: a coordinate a
+  disproportionate number of layers depend on.
+- **Outlier features and quantization.** [Dettmers et al., 2022](https://arxiv.org/abs/2208.07339)
+  (LLM.int8()) found that naively quantizing these outlier channels to low
+  precision measurably degrades quality, which is why many quantization
+  schemes give outlier channels special (higher-precision) treatment instead
+  of quantizing everything uniformly.
+- **Attention sinks.** Separately, [Xiao et al., 2023](https://arxiv.org/abs/2309.17453)
+  found models dump disproportionate attention onto a few fixed positions
+  (often the first token) regardless of content. Persistent channels and
+  attention sinks are studied at different levels (residual-stream dimension
+  vs. sequence position) but both describe the same broader pattern: a small,
+  fixed part of the model absorbing a disproportionate share of its capacity.
+
+One honest caveat: this is all inferred from **weights**, not activations —
+the papers above mostly measure activations on real input. A channel with
+outlier weight magnitude is a good candidate for also having outlier
+activations (that's the mechanism the super-weights work describes), but
+`--chain-report` doesn't run the model to confirm it. Treat a persistent
+channel as a lead worth investigating (e.g. before pruning/quantizing it
+aggressively), not a proven activation outlier.
+
+`chain_scatter.png` exists because persistence and readout influence turned
+out not to be the same thing in practice: running `--chain-report` on Gemma
+3n E4B, its two most persistent channels (outliers in ~25% and ~24% of every
+layer's tensors) had final-norm gamma of 4.2 and 0.005 respectively — one
+channel actually reaches the logits, the other is scaled almost to nothing
+right before the readout despite dominating nearly every layer up to that
+point. The general population of channels clusters tightly around gamma ≈
+7–9; the flagged chain channels scatter across the *entire* range, from
+inside that cluster down to zero. So no, being a persistent chain channel
+doesn't reliably predict how much a channel influences the final output —
+some chain channels write straight to the logits, others look like they're
+doing something purely internal (routing, an attention-sink-style role, a
+bias term consumed by later layers) that the final projection ignores
+entirely. Confirming *which* would still need activations.

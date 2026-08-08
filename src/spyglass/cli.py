@@ -10,6 +10,16 @@ from typing import Optional
 import numpy as np
 
 from spyglass import __version__
+from spyglass.chain import (
+    BLOCK_TENSOR_RE,
+    ChainSample,
+    build_chain_report,
+    channel_magnitude,
+    infer_hidden_size,
+    render_chain_heatmap,
+    render_chain_scatter,
+    write_chain_report_json,
+)
 from spyglass.dequant import DequantError, dequantize_tensor
 from spyglass.imaging import compose_tile_grid, write_grayscale_png, write_rgb_png
 from spyglass.naming import safe_filename
@@ -91,6 +101,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--chain-report", action="store_true",
+        help="also write chain_heatmap.png and chain_report.json, tracing which "
+        "residual-stream channels have outlier weight magnitude across nearly every "
+        "layer (a 'chain' running the model's full depth -- see README). Covers only "
+        "tensors written in this run, so combine with --overwrite for a complete "
+        "picture on a directory that was already rendered.",
+    )
+
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="list tensors and planned actions without dequantizing or writing anything",
     )
@@ -110,7 +129,12 @@ def _matches_filters(name: str, include: list[re.Pattern], exclude: list[re.Patt
 
 
 def _process_tensor(
-    info: TensorInfo, out_path: Path, clip: float, max_dim: Optional[int]
+    info: TensorInfo,
+    out_path: Path,
+    clip: float,
+    max_dim: Optional[int],
+    chain_hidden_size: Optional[int] = None,
+    chain_samples: Optional[list[ChainSample]] = None,
 ) -> TensorOutcome:
     """Dequantizes, normalizes, and writes a single tensor's PNG.
 
@@ -133,6 +157,17 @@ def _process_tensor(
             name=info.name, ggml_type=info.ggml_type.name, shape=info.shape,
             status="skipped_dequant_unsupported", reason=str(exc),
         )
+
+    if chain_hidden_size is not None and chain_samples is not None:
+        block_match = BLOCK_TENSOR_RE.match(info.name)
+        if block_match:
+            magnitude = channel_magnitude(arr_f32, chain_hidden_size)
+            if magnitude is not None:
+                # list.append is atomic under the GIL, so threads sharing
+                # chain_samples (via --jobs > 1) need no extra lock here.
+                chain_samples.append(
+                    ChainSample(layer=int(block_match.group(1)), family=block_match.group(2), magnitude=magnitude)
+                )
 
     try:
         if max_dim is not None:
@@ -210,6 +245,16 @@ def run(args: argparse.Namespace) -> RunReport:
 
     logger.warning("clip value: %.6g (source: %s)", clip, clip_source)
 
+    chain_hidden_size: Optional[int] = None
+    chain_samples: list[ChainSample] = []
+    if args.chain_report:
+        chain_hidden_size = infer_hidden_size(kept_infos)
+        if chain_hidden_size is None:
+            logger.warning(
+                "--chain-report: no blk.N.*.weight tensor found to infer a "
+                "residual-stream width from; skipping chain analysis"
+            )
+
     # Cheap, sequential decisions first (dry-run / already-exists), same as
     # before parallelism existed. Only tensors that actually need
     # dequantizing go into to_process, which is what gets parallelized.
@@ -240,7 +285,7 @@ def run(args: argparse.Namespace) -> RunReport:
     if args.jobs <= 1:
         for info in to_process:
             outcome_by_name[info.name] = _process_tensor(
-                info, out_paths[info.name], clip, args.max_dim
+                info, out_paths[info.name], clip, args.max_dim, chain_hidden_size, chain_samples
             )
     else:
         max_memory_bytes = (
@@ -250,7 +295,9 @@ def run(args: argparse.Namespace) -> RunReport:
         )
         results = run_memory_aware(
             to_process,
-            lambda info: _process_tensor(info, out_paths[info.name], clip, args.max_dim),
+            lambda info: _process_tensor(
+                info, out_paths[info.name], clip, args.max_dim, chain_hidden_size, chain_samples
+            ),
             max_workers=args.jobs,
             max_memory_bytes=max_memory_bytes,
         )
@@ -260,12 +307,60 @@ def run(args: argparse.Namespace) -> RunReport:
     # and human-browsable regardless of scheduling, whatever args.jobs is.
     outcomes = [outcome_by_name[info.name] for info in all_infos]
 
+    chain_report_path: Optional[str] = None
+    chain_heatmap_path: Optional[str] = None
+    chain_scatter_path: Optional[str] = None
+    if chain_hidden_size is not None:
+        chain_report = build_chain_report(chain_samples, chain_hidden_size)
+        if chain_report is None:
+            logger.warning("--chain-report: no tensors were written this run; skipping chain analysis")
+        else:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            heatmap_path = output_dir / "chain_heatmap.png"
+            report_path = output_dir / "chain_report.json"
+            render_chain_heatmap(chain_report, heatmap_path)
+            write_chain_report_json(chain_report, report_path)
+            chain_heatmap_path = str(heatmap_path)
+            chain_report_path = str(report_path)
+            logger.warning(
+                "chain report: %s outlier-heavy channels across %d layers -> %s",
+                len(chain_report.top_channels), chain_report.n_layers, report_path,
+            )
+
+            # A channel that dominates every mid-network matrix can still be
+            # scaled to near-nothing by the final RMSNorm before it reaches
+            # the logits, so pair the heatmap with what actually survives to
+            # the readout -- if the model has the tensor for it.
+            gamma_info = next((i for i in all_infos if i.name == "output_norm.weight"), None)
+            if gamma_info is None:
+                logger.warning("--chain-report: no 'output_norm.weight' tensor found; skipping gamma scatter")
+            else:
+                try:
+                    gamma = dequantize_tensor(gamma_info)
+                except DequantError as exc:
+                    logger.warning("--chain-report: could not dequantize output_norm.weight: %s", exc)
+                    gamma = None
+                if gamma is not None and gamma.shape != (chain_hidden_size,):
+                    logger.warning(
+                        "--chain-report: output_norm.weight shape %s doesn't match inferred "
+                        "hidden_size %d; skipping gamma scatter",
+                        gamma.shape, chain_hidden_size,
+                    )
+                elif gamma is not None:
+                    scatter_path = output_dir / "chain_scatter.png"
+                    render_chain_scatter(chain_report, gamma, scatter_path)
+                    chain_scatter_path = str(scatter_path)
+                    logger.warning("chain scatter: %s", scatter_path)
+
     report = RunReport(
         input_path=str(args.gguf_path),
         output_dir=str(output_dir),
         clip_value=clip,
         clip_source=clip_source,
         outcomes=outcomes,
+        chain_report_path=chain_report_path,
+        chain_scatter_path=chain_scatter_path,
+        chain_heatmap_path=chain_heatmap_path,
     )
 
     if not args.dry_run and not args.no_manifest:

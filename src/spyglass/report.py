@@ -34,6 +34,9 @@ class RunReport:
     clip_value: float
     clip_source: Literal["manual", "auto_sampled"]
     outcomes: list[TensorOutcome] = field(default_factory=list)
+    chain_report_path: Optional[str] = None
+    chain_heatmap_path: Optional[str] = None
+    chain_scatter_path: Optional[str] = None
 
     def counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -49,6 +52,9 @@ def write_manifest(report: RunReport, path: Path) -> None:
         "clip_value": report.clip_value,
         "clip_source": report.clip_source,
         "outcomes": [asdict(o) for o in report.outcomes],
+        "chain_report_path": report.chain_report_path,
+        "chain_heatmap_path": report.chain_heatmap_path,
+        "chain_scatter_path": report.chain_scatter_path,
     }
     path.write_text(json.dumps(payload, indent=2))
 
@@ -60,3 +66,8 @@ def print_summary(report: RunReport, *, print_fn=print) -> None:
     for status, n in sorted(counts.items()):
         if status != "written":
             print_fn(f"  {status}: {n}")
+    if report.chain_report_path:
+        print_fn(f"chain report: {report.chain_report_path}")
+        print_fn(f"chain heatmap: {report.chain_heatmap_path}")
+    if report.chain_scatter_path:
+        print_fn(f"chain scatter: {report.chain_scatter_path}")
